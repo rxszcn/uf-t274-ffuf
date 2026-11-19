@@ -45,6 +45,15 @@ func withCleanFlagState(args []string, fn func()) {
 	fn()
 }
 
+// normalizeEOL folds CRLF to LF. The goldens are committed with LF, but a checkout
+// on Windows with core.autocrlf=true rewrites them to CRLF on disk, which made the
+// exact string comparison fail for reasons that have nothing to do with the CLI
+// behavior the golden pins. Line endings are a checkout artifact here, not part of
+// the characterization, so both sides are normalized before comparing.
+func normalizeEOL(s string) string {
+	return strings.ReplaceAll(s, "\r\n", "\n")
+}
+
 func compareGolden(t *testing.T, path, got string) {
 	t.Helper()
 	if *updateGolden {
@@ -60,7 +69,7 @@ func compareGolden(t *testing.T, path, got string) {
 	if err != nil {
 		t.Fatalf("missing golden %s — run: go test -run Characterization -update-golden\n(%v)", path, err)
 	}
-	if got != string(want) {
+	if normalizeEOL(got) != normalizeEOL(string(want)) {
 		t.Errorf("characterization drift in %s\n--- got ---\n%s\n--- want ---\n%s", path, got, string(want))
 	}
 }

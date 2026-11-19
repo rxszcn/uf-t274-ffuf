@@ -210,20 +210,45 @@ func (i *interactive) handleInput(in []byte) {
 }
 
 // resultProbe rebuilds the minimal Response needed to re-evaluate the active
-// filters against an already-collected result. ContentLines must come from the
-// result's line count, not its length: feeding ContentLength here made an
-// in-console "fl" (line count) filter match against the wrong number.
+// filters against an already-collected result. ContentLines/ContentWords must come
+// from the result's recorded counts, and Data is deliberately left nil: the
+// refresh path has no captured body, and line/word filters resolve the count from
+// the recorded value through the same judgement source the scan path uses
+// (filter.ResponseLineCount / ResponseWordCount). Duration is carried so a "ft"
+// filter is judged over the time actually observed, not a zero stand-in.
 func resultProbe(res ffuf.Result) *ffuf.Response {
 	return &ffuf.Response{
 		StatusCode:    res.StatusCode,
 		ContentLines:  res.ContentLines,
 		ContentWords:  res.ContentWords,
 		ContentLength: res.ContentLength,
+		Duration:      res.Duration,
 	}
 }
 
 func (i *interactive) refreshResults() {
 	filters := i.Job.Config.MatcherManager.GetFilters()
+	// Every decision goes through the same filter.Filter call the scan path makes,
+	// over a probe that carries only the recorded result - so the two paths share
+	// one judgement source and the refresh never re-derives a count from a summary
+	// field such as ContentLength.
+	//
+	// A line/word filter needs a resolvable count. When the body was not captured
+	// (-ignore-body) and no count was recorded, it returns filter.ErrCountUnavailable
+	// rather than silently scoring the result as one line/one word. In that case
+	// refuse the refresh as a whole and say why: dropping those results would be as
+	// wrong as keeping them, and a partial refresh would leave CurrentResults
+	// inconsistent with the active filters.
+	for _, res := range i.Job.Output.GetCurrentResults() {
+		for name, filter := range filters {
+			if _, err := filter.Filter(resultProbe(res)); err != nil {
+				i.Job.Output.Error(fmt.Sprintf(
+					"Cannot refresh results: the active %q filter (value %s) cannot be evaluated for %s: %s. Collected results were left unchanged.",
+					name, filter.Repr(), res.Url, err))
+				return
+			}
+		}
+	}
 	// Keep a result only if it survives every active filter. The filtering runs
 	// under the output lock via FilterCurrentResults, so a match arriving mid-
 	// refresh is not dropped (the previous GetCurrentResults/SetCurrentResults
@@ -231,7 +256,13 @@ func (i *interactive) refreshResults() {
 	// result once per filter it passed).
 	i.Job.Output.FilterCurrentResults(func(res ffuf.Result) bool {
 		for _, filter := range filters {
-			filterOut, _ := filter.Filter(resultProbe(res))
+			filterOut, err := filter.Filter(resultProbe(res))
+			if err != nil {
+				// Unreachable after the pre-check above, except for a result that
+				// arrived in between; keep it rather than guess, so a race can never
+				// silently delete a finding.
+				return true
+			}
 			if filterOut {
 				return false
 			}

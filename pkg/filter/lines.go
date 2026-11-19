@@ -1,7 +1,6 @@
 package filter
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -43,11 +42,15 @@ func (f *LineFilter) MarshalJSON() ([]byte, error) {
 }
 
 func (f *LineFilter) Filter(response *ffuf.Response) (bool, error) {
-	// bytes.Count(...)+1 matches len(strings.Split(...)) for a single-byte
-	// separator without allocating a []string of the whole body. See runner.
-	linesSize := bytes.Count(response.Data, []byte("\n")) + 1
+	// The count comes from the single judgement source shared with the interactive
+	// refresh path (see ResponseLineCount), so a body-less result scored from its
+	// recorded ContentLines and a live response scored from Data can never disagree.
+	linesSize, err := ResponseLineCount(response)
+	if err != nil {
+		return false, err
+	}
 	for _, iv := range f.Value {
-		if iv.Min <= int64(linesSize) && int64(linesSize) <= iv.Max {
+		if iv.Min <= linesSize && linesSize <= iv.Max {
 			return true, nil
 		}
 	}

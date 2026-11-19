@@ -1,7 +1,6 @@
 package filter
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -43,11 +42,15 @@ func (f *WordFilter) MarshalJSON() ([]byte, error) {
 }
 
 func (f *WordFilter) Filter(response *ffuf.Response) (bool, error) {
-	// bytes.Count(...)+1 matches len(strings.Split(...)) for a single-byte
-	// separator without allocating a []string of the whole body. See runner.
-	wordsSize := bytes.Count(response.Data, []byte(" ")) + 1
+	// The count comes from the single judgement source shared with the interactive
+	// refresh path (see ResponseWordCount), so a body-less result scored from its
+	// recorded ContentWords and a live response scored from Data can never disagree.
+	wordsSize, err := ResponseWordCount(response)
+	if err != nil {
+		return false, err
+	}
 	for _, iv := range f.Value {
-		if iv.Min <= int64(wordsSize) && int64(wordsSize) <= iv.Max {
+		if iv.Min <= wordsSize && wordsSize <= iv.Max {
 			return true, nil
 		}
 	}
